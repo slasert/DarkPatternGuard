@@ -1,5 +1,7 @@
 # Documentation
 
-Document preprocessing, modeling decisions, benchmark protocols, and the
-two-minute presentation material here.
+Implementation documentation:
+
+- `preprocessing.md`: source data, cleaning and reproducible splits.
+- `robustness.md`: reference models, held-out evaluation and explainability.
 

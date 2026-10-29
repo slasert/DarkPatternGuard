@@ -1,0 +1,7 @@
+{
+  "seed": 1729,
+  "near_duplicate_threshold": 0.85,
+  "bootstrap_resamples": 1000,
+  "confidence_bins": 10,
+  "max_explanation_words": 80
+}

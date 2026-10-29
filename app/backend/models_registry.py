@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -41,6 +42,7 @@ class _TransformerArtifact:
 
     model: Any
     tokenizer: Any
+    identity: dict[str, Any] | None = None
 
     def predict(self, text: str) -> Prediction:
         """Run inference using the trained model's four-class probabilities."""
@@ -80,10 +82,30 @@ class ModelRegistry:
         """Load CPU-only serving components once at application startup."""
         if self._loaded:
             return
+        from src.robustness.reference import ReferenceModel
+
+        explicit_reference = os.getenv("DPG_REFERENCE_ARTIFACT")
+        if explicit_reference:
+            reference = ReferenceModel(Path(explicit_reference))
+            self._models = {reference.identity["name"]: reference}
+            self._loaded = True
+            return
         candidate = self._best_transformer_candidate()
+        reference_paths = sorted((self.models_dir / "reference").glob("*/seed*.json"))
         if candidate is not None:
             model_name, seed = candidate
             self._models[model_name] = self._load_transformer(model_name, seed)
+        elif reference_paths:
+            references = [ReferenceModel(path) for path in reference_paths]
+            reference = max(
+                references,
+                key=lambda item: (
+                    item.validation_macro_f1,
+                    item.identity["name"],
+                    -item.identity["seed"],
+                ),
+            )
+            self._models = {reference.identity["name"]: reference}
         elif (self.results_dir / "leaderboard.csv").is_file():
             raise FileNotFoundError(
                 "A benchmark leaderboard exists, but no trained transformer "
@@ -112,27 +134,20 @@ class ModelRegistry:
                 except ValueError:
                     continue
                 validation_path = seed_dir / "val_preds.csv"
-                weights_path = (
-                    self.models_dir
-                    / model_name
-                    / f"seed{seed}.weights.pt"
-                )
+                weights_path = self.models_dir / model_name / f"seed{seed}.weights.pt"
                 if not validation_path.is_file():
                     continue
                 if not weights_path.is_file():
-                    raise FileNotFoundError(
-                        f"Validation predictions exist without serving weights: "
-                        f"{weights_path}"
-                    )
+                    # Select among artifacts actually restored on this host.
+                    # Saved predictions alone are never serving candidates.
+                    continue
                 frame = pd.read_csv(validation_path)
                 required_columns = {"true_label", *PROBABILITY_COLUMNS}
                 if frame.empty or not required_columns.issubset(frame.columns):
                     raise ValueError(
                         f"Invalid validation prediction file: {validation_path}"
                     )
-                probabilities = frame.loc[:, PROBABILITY_COLUMNS].to_numpy(
-                    dtype=float
-                )
+                probabilities = frame.loc[:, PROBABILITY_COLUMNS].to_numpy(dtype=float)
                 if not np.isfinite(probabilities).all():
                     raise ValueError(
                         f"Non-finite validation probabilities: {validation_path}"
@@ -160,6 +175,15 @@ class ModelRegistry:
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+        from src.robustness.inference import sha256, tokenizer_fingerprint
+
+        weights_path = self.models_dir / model_name / f"seed{seed}.weights.pt"
+        if not weights_path.is_file() or weights_path.stat().st_size == 0:
+            raise FileNotFoundError(
+                f"Missing or empty trained checkpoint: {weights_path}"
+            )
+        checkpoint_hash = sha256(weights_path)
+
         model_id = TRANSFORMER_MODELS[model_name]
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
@@ -173,12 +197,34 @@ class ModelRegistry:
             label2id={label: index for index, label in enumerate(LABELS)},
             local_files_only=True,
         )
-        weights_path = self.models_dir / model_name / f"seed{seed}.weights.pt"
-        model.load_state_dict(
-            torch.load(weights_path, map_location="cpu", weights_only=True)
-        )
+        try:
+            state = torch.load(weights_path, map_location="cpu", weights_only=True)
+            model.load_state_dict(state)
+        except (EOFError, pickle.UnpicklingError, TypeError) as error:
+            raise ValueError(
+                f"Invalid trained checkpoint {weights_path}: {error}"
+            ) from error
+        if sha256(weights_path) != checkpoint_hash:
+            raise ValueError(
+                "Checkpoint changed while loading; retry with frozen files"
+            )
         model.eval()
-        return _TransformerArtifact(model=model, tokenizer=tokenizer)
+        return _TransformerArtifact(
+            model=model,
+            tokenizer=tokenizer,
+            identity={
+                "name": model_name,
+                "seed": seed,
+                "base_model": model_id,
+                "checkpoint_sha256": checkpoint_hash,
+                "tokenizer_sha256": tokenizer_fingerprint(tokenizer),
+                "labels": list(LABELS),
+                "max_length": 256,
+                "device": "cpu",
+                "label_mapping_source": "Phase 1 registry LABELS convention",
+                "training_provenance": "operator-supplied; hash identifies bytes only",
+            },
+        )
 
     def _load_optional(self, name: str) -> Any:
         """Return a persisted model when available, otherwise a safe fallback."""
@@ -196,12 +242,14 @@ class ModelRegistry:
     def predict(self, text: str) -> dict[str, Prediction]:
         """Predict with each active model without reloading state."""
         self.load()
+        from src.robustness.reference import ReferenceModel
+
         predictions = {}
         for name in self._models:
             model = self._models[name]
             predictions[name] = (
                 model.predict(text)
-                if isinstance(model, _TransformerArtifact)
+                if isinstance(model, _TransformerArtifact | ReferenceModel)
                 else self._fallback_prediction(text, name)
             )
         return predictions
@@ -256,10 +304,25 @@ class ModelRegistry:
 
     def model_metadata(self) -> list[dict[str, Any]]:
         """Read model Macro-F1 metadata from leaderboard files when present."""
+        self.load()
+        reference_metadata = [
+            {
+                "model": name,
+                "version": "reference-retrained",
+                "macro_f1": None,
+                "validation_macro_f1": model.validation_macro_f1,
+                "active": True,
+                "provenance": model.identity["training_provenance"],
+            }
+            for name, model in self._models.items()
+            if hasattr(model, "validation_macro_f1")
+        ]
         leaderboard_json = self.results_dir / "leaderboard.json"
         if leaderboard_json.is_file():
             payload = json.loads(leaderboard_json.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, list) else payload.get("models", [])
+            return (
+                payload if isinstance(payload, list) else payload.get("models", [])
+            ) + reference_metadata
         leaderboard_csv = self.results_dir / "leaderboard.csv"
         if leaderboard_csv.is_file():
             import pandas as pd
@@ -273,7 +336,7 @@ class ModelRegistry:
                     "active": row.get("model", "") in self.active_models,
                 }
                 for row in frame.to_dict(orient="records")
-            ]
+            ] + reference_metadata
         return [
             {"model": name, "version": "fallback", "macro_f1": None}
             for name in self.active_models

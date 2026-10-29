@@ -63,3 +63,18 @@ def test_leaderboard_metadata_marks_only_the_loaded_model_active(tmp_path) -> No
 
     assert [entry["active"] for entry in metadata] == [False, True]
     assert [entry["version"] for entry in metadata] == ["trained", "trained"]
+
+
+def test_registry_selects_among_restored_checkpoints(tmp_path):
+    results_dir = tmp_path / "results"
+    models_dir = tmp_path / "models"
+    for seed in (1729, 2718):
+        _write_validation_file(
+            results_dir / "finetune_bert" / f"seed{seed}" / "val_preds.csv",
+            list(LABELS),
+        )
+    checkpoint = models_dir / "finetune_bert" / "seed2718.weights.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.touch()
+    registry = ModelRegistry(results_dir=results_dir, models_dir=models_dir)
+    assert registry._best_transformer_candidate() == ("finetune_bert", 2718)

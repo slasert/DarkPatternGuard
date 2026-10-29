@@ -6,8 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 
-from models.llm import CostLatencyTracker, classify_text
+llm_module = pytest.importorskip(
+    "models.llm",
+    reason="Optional Phase 1 LLM implementation is absent from upstream; "
+    "Robustness evaluation reference models do not use it.",
+)
+CostLatencyTracker = llm_module.CostLatencyTracker
+classify_text = llm_module.classify_text
 
 
 def _response() -> SimpleNamespace:

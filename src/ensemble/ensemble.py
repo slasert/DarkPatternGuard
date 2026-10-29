@@ -12,13 +12,13 @@ from scipy.optimize import minimize
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
+from eval.config import configured_seeds
 from eval.metrics import (
     LABELS,
     PROBABILITY_COLUMNS,
     save_prediction_artifacts,
     save_prediction_csv,
 )
-from models.neural_common import configured_seeds
 
 
 def _probabilities(frame: pd.DataFrame) -> np.ndarray:

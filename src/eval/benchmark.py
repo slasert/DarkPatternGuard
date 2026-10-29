@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from eval.metrics import LABELS, PROBABILITY_COLUMNS
-from models.neural_common import configured_seeds
+from .config import configured_seeds
+from .metrics import LABELS, PROBABILITY_COLUMNS
 
 
 def _prediction_files(results_dir: Path) -> list[tuple[str, int, Path]]:
@@ -156,6 +156,15 @@ def write_learning_curve(results_dir: Path) -> None:
     plt.close(figure)
 
 
+def error_rows(frame: pd.DataFrame, predicted: np.ndarray) -> pd.DataFrame:
+    """Shared row-level errors, preserving metadata for categorized analysis."""
+    errors = frame.loc[predicted != frame["true_label"]].copy()
+    errors["predicted"] = predicted[predicted != frame["true_label"]]
+    text = errors["text"] if "text" in errors else errors["id"]
+    errors["text_length"] = text.fillna(errors["id"]).astype(str).str.len()
+    return errors
+
+
 def write_error_analysis(results_dir: Path = Path("results")) -> None:
     """Group all saved model errors and highlight baseline-vs-novel wins."""
     prediction_sets = {
@@ -187,14 +196,7 @@ def write_error_analysis(results_dir: Path = Path("results")) -> None:
         predicted = np.asarray(LABELS)[
             frame[list(PROBABILITY_COLUMNS)].to_numpy().argmax(axis=1)
         ]
-        errors = frame.loc[predicted != frame["true_label"]].copy()
-        errors["predicted"] = predicted[predicted != frame["true_label"]]
-        text_column = "text" if "text" in errors.columns else None
-        errors["text_length"] = (
-            (errors[text_column].fillna(errors["id"]) if text_column else errors["id"])
-            .astype(str)
-            .str.len()
-        )
+        errors = error_rows(frame, predicted)
         lines.append(f"### {model}")
         if errors.empty:
             lines.append("No errors found.")

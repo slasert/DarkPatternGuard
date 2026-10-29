@@ -64,9 +64,7 @@ def test_source_pages_are_kept_in_one_partition(tmp_path: Path) -> None:
     clean_records(records).to_csv(cleaned, index=False)
     output = tmp_path / "grouped_artifacts"
     manifest = write_split_artifacts(cleaned, output, seed=1729)
-    frames = [
-        pd.read_csv(output / f"{name}.csv") for name in ("train", "val", "test")
-    ]
+    frames = [pd.read_csv(output / f"{name}.csv") for name in ("train", "val", "test")]
     source_ids = [set(frame["source_id"]) for frame in frames]
 
     assert manifest["grouped_by_source_id"] is True

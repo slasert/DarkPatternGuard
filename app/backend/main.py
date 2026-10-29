@@ -19,6 +19,12 @@ from sqlalchemy.orm import Session
 from app.backend.database import get_db, init_db
 from app.backend.models import FeedbackRecord, PredictionRecord
 from app.backend.models_registry import Prediction, get_registry
+from src.robustness.explain import explain as explain_model
+from src.robustness.inference import (
+    ArtifactUnavailable,
+    from_registry,
+    validate_probabilities,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +72,13 @@ class BatchRequest(BaseModel):
         return values
 
 
+class ExplainRequest(TextRequest):
+    """Explain one actual loaded model, optionally compare a controlled edit."""
+
+    model: str | None = None
+    perturbed_text: str | None = Field(default=None, max_length=4000)
+
+
 class FeedbackRequest(BaseModel):
     """User correction attached to a saved prediction."""
 
@@ -107,7 +120,12 @@ def _prediction_payload(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Load the serving registry once during application startup."""
-    get_registry().load()
+    try:
+        get_registry().load()
+    except (OSError, ValueError, RuntimeError) as error:
+        # Keep docs/history and actionable model errors available without
+        # substituting heuristic predictions for missing benchmark weights.
+        logger.error("trained_model_unavailable: %s", error)
     init_db()
     yield
 
@@ -179,6 +197,14 @@ def _predict_and_save(payload: TextRequest, db: Session) -> dict:
         response = _prediction_payload(predictions, ensemble)
         response["prediction_id"] = record.id
         return response
+    except OSError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Trained model unavailable: {error}. Restore the original "
+                "trained weights and local tokenizer cache."
+            ),
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as error:
@@ -199,6 +225,45 @@ def predict_batch(payload: BatchRequest, db: Session = Depends(get_db)):  # noqa
             _predict_and_save(TextRequest(text=text), db) for text in payload.texts
         ]
     }
+
+
+@app.post("/explain")
+def explain_prediction(payload: ExplainRequest):
+    """Word-level attribution of a real model; no text is persisted here."""
+    try:
+        model = from_registry(get_registry(), payload.model)
+        result = explain_model(model, payload.text)
+        if payload.perturbed_text is not None:
+            if (
+                not payload.perturbed_text.strip()
+                or len(payload.perturbed_text.split()) > 80
+            ):
+                raise ValueError("Perturbed text must contain 1 to 80 words")
+            probabilities = validate_probabilities(
+                model.probabilities([payload.perturbed_text]), 1
+            )[0]
+            labels = list(result["probabilities"])
+            target = labels.index(result["label"])
+            predicted = int(probabilities.argmax())
+            result["comparison"] = {
+                "text": payload.perturbed_text,
+                "label": labels[predicted],
+                "confidence": float(probabilities[predicted]),
+                "probabilities": dict(zip(labels, probabilities.tolist(), strict=True)),
+                "prediction_changed": predicted != target,
+                "original_class_probability_delta": float(
+                    probabilities[target] - result["confidence"]
+                ),
+                "note": (
+                    "A changed prediction is not necessarily an error "
+                    "when meaning changes."
+                ),
+            }
+        return result
+    except (ArtifactUnavailable, OSError, RuntimeError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/history")
@@ -296,15 +361,25 @@ def stats(db: Session = Depends(get_db)):  # noqa: B008
 @app.get("/models")
 def models():
     """Return active model names, versions, and saved Macro-F1 scores."""
-    registry = get_registry()
-    return {"models": registry.model_metadata()}
+    try:
+        registry = get_registry()
+        return {"models": registry.model_metadata()}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(
+            status_code=503, detail=f"Trained model unavailable: {error}"
+        ) from error
 
 
 @app.get("/health")
 def health():
     """Return service health and active model count."""
-    registry = get_registry()
-    return {"status": "ok", "active_models": len(registry.active_models)}
+    try:
+        registry = get_registry()
+        return {"status": "ok", "active_models": len(registry.active_models)}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(
+            status_code=503, detail=f"Trained model unavailable: {error}"
+        ) from error
 
 
 @app.get("/metrics")

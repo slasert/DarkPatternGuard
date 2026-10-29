@@ -13,6 +13,6 @@ test("analyze page renders a mocked result", async ({ page }) => {
   await page.getByLabel("E-commerce text").fill("Hurry, offer expires tonight!");
   await page.getByRole("button", { name: "Analyze copy" }).click();
   await expect(page.getByText("Urgency", { exact: true }).last()).toBeVisible();
-  await expect(page.getByText("87.5%")).toBeVisible();
+  await expect(page.locator("strong", { hasText: "87.5%" })).toBeVisible();
   await expect(page.getByText("hurry", { exact: true })).toBeVisible();
 });

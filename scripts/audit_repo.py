@@ -22,6 +22,9 @@ IGNORED_DIRS = {
     "models_out",
     "models_cache",
     "huggingface_cache",
+    "experiment_runs",
+    "test-results",
+    "playwright-report",
     "dist",
     "build",
 }

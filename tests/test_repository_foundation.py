@@ -18,7 +18,7 @@ def test_required_repository_files_exist() -> None:
         "configs/README.md",
         "docs/preprocessing.md",
         "scripts/smoke.py",
-        "scripts/run_stage.py",
+        "scripts/train_reference_models.py",
     )
 
     missing_files = [

@@ -72,8 +72,7 @@ def records_from_tsv(contents: str) -> tuple[list[dict[str, str]], Counter[str]]
     missing_labels = set(LABEL_MAP.values()) - counts.keys()
     if missing_labels:
         raise ValueError(
-            "Upstream dataset lacks required labels: "
-            f"{sorted(missing_labels)}"
+            "Upstream dataset lacks required labels: " f"{sorted(missing_labels)}"
         )
     return records, excluded_categories
 
@@ -81,9 +80,7 @@ def records_from_tsv(contents: str) -> tuple[list[dict[str, str]], Counter[str]]
 def fetch_raw_dataset(output_path: Path) -> dict[str, object]:
     """Download and save a provenance-preserving raw JSON array."""
     if output_path.exists():
-        raise FileExistsError(
-            f"Refusing to overwrite existing raw data: {output_path}"
-        )
+        raise FileExistsError(f"Refusing to overwrite existing raw data: {output_path}")
     with urlopen(SOURCE_URL, timeout=60) as response:
         payload = response.read()
     contents = payload.decode("utf-8-sig")

@@ -91,3 +91,28 @@ export const sendFeedback = (predictionId: number, userLabel: Label, comment?: s
 
 export const getModels = async () => (await request<{ models: ModelMetadata[] }>("/models")).models;
 export const getStats = () => request<StatsResponse>("/stats");
+
+export interface Explanation {
+  text: string;
+  model: { name: string; seed: number; checkpoint_sha256: string; tokenizer_sha256: string };
+  label: Label;
+  confidence: number;
+  method: string;
+  description: string;
+  truncation_warning: string;
+  tokens: { text: string; start: number; end: number; score: number }[];
+  feature_attributions?: {
+    target_class: Label; bias: number; logit: number; description: string;
+    features: { feature: string; score: number }[];
+  };
+  comparison?: {
+    text: string; label: Label; confidence: number; prediction_changed: boolean;
+    original_class_probability_delta: number; note: string;
+  };
+}
+
+export const explainText = (text: string, perturbedText?: string) =>
+  request<Explanation>("/explain", {
+    method: "POST",
+    body: JSON.stringify({ text, perturbed_text: perturbedText || null }),
+  });

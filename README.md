@@ -1,5 +1,24 @@
 # DarkPatternGuard
 
+Robustness evaluation: [reproduction guide](docs/robustness.md) and
+[human annotation](data/challenge/README.md).
+Phase 1 results are preserved. Newly authorized reference models are separate
+from historical Phase 1 models. Phases 3 and 4 are not implemented here.
+
+To run Robustness evaluation after installing `requirements.txt`:
+
+```powershell
+python scripts/train_reference_models.py
+python -m uvicorn app.backend.main:app --port 8000
+# In another terminal:
+npm --prefix app/frontend ci
+npm --prefix app/frontend run dev
+```
+
+Reference weights are recreated locally rather than committed. Training never
+uses challenge data. The 36 challenge candidates await a teammate's human
+annotation; their ground-truth Macro-F1 is deliberately unreported.
+
 DarkPatternGuard is an academic and engineering showcase for detecting
 manipulative language in e-commerce copy. Given a product description, offer,
 or checkout message, it predicts one of four classes:
@@ -185,18 +204,20 @@ Python 3.11 is required. Install backend dependencies:
 make setup
 ```
 
-Run the stages in order:
+Train the available reference models:
 
 ```powershell
-make data
-make baselines
-make neural
-make llm                 # requires OPENAI_API_KEY for live calls
-make ensemble
-make report
+python scripts/train_reference_models.py
 ```
 
-The smoke path uses a deterministic 200-row exercise:
+Historical benchmark predictions remain under `results/`. The original
+`src/models/` training modules were not included upstream, so the legacy
+`make baselines`, `make neural`, and `make llm` targets require those modules
+to be restored. Their original configurations are retained for provenance.
+
+The smoke check validates trained reference artifacts and an explanation. If
+local weights are absent, it trains temporary reference models using only the
+existing training/validation splits:
 
 ```powershell
 make smoke
@@ -238,10 +259,10 @@ After real fine-tuning artifacts and a benchmark leaderboard are available,
 the API serves the BERT or DeBERTa seed with the highest validation Macro-F1.
 Its trained weights are loaded from `models_out`, and the matching Hugging Face
 tokenizer/base weights must be available in the configured local cache. The API
-marks the active model in `/models`; if a leaderboard exists without a matching
-trained checkpoint, startup fails rather than silently serving heuristic
-predictions. The heuristic fallback is only used before benchmark artifacts
-exist.
+marks the active model in `/models`. If a leaderboard exists without a matching
+trained checkpoint, inference and health return an actionable 503 error while
+docs and history remain accessible. The heuristic fallback is only used before
+benchmark artifacts exist; Robustness evaluation always refuses it.
 
 ### Docker
 
@@ -272,13 +293,7 @@ following is the complete source-level map.
 | `docs/` | Method and preprocessing documentation |
 | `src/data/clean.py` | Load, normalize, deduplicate, and balance records |
 | `src/data/split.py` | Stratify data and write manifests/class weights |
-| `src/models/classical.py` | Naive Bayes, logistic, SVM, and LightGBM |
-| `src/models/cnn.py` | Kim-style CNN |
-| `src/models/bilstm.py` | Two-layer BiLSTM |
-| `src/models/small_transformer.py` | Custom-BPE Transformer |
-| `src/models/finetune.py` | Trainer-free HF fine-tuning |
-| `src/models/neural_common.py` | Shared neural training utilities |
-| `src/models/llm.py` | Cached zero/five-shot GPT benchmark |
+| `src/robustness/` | Reference training, artifact loading, challenge evaluation and explanations |
 | `src/eval/metrics.py` | Metrics, calibration, bootstrap, and artifacts |
 | `src/eval/benchmark.py` | Leaderboard, plots, and error analysis |
 | `src/ensemble/ensemble.py` | Calibration, voting, weighting, stacking, ablations |
@@ -287,8 +302,13 @@ following is the complete source-level map.
 | `app/backend/models.py` | Prediction, feedback, and model-run ORM tables |
 | `app/backend/models_registry.py` | Singleton CPU serving registry |
 | `app/frontend/src/` | React pages, components, router, and API client |
-| `scripts/run_stage.py` | Deterministic stage configuration check |
-| `scripts/smoke.py` | 200-row pipeline smoke runner |
+| `scripts/smoke.py` | Reference-model loading, probability and explanation smoke check |
+| `scripts/train_reference_models.py` | Reproducible training using original train/validation splits |
+| `scripts/build_challenge.py` | Construct unapproved challenge candidates |
+| `scripts/evaluate_robustness.py` | Contamination audit and frozen-model evaluation |
+| `scripts/evaluate_perturbations.py` | Controlled text-perturbation measurements |
+| `scripts/review_challenge.py` | Human-annotation export and validated import |
+| `scripts/explain_prediction.py` | Actual-model attribution export |
 | `scripts/fetch_models.py` | Ignored Hugging Face cache prefetcher |
 | `scripts/audit_repo.py` | Documentation and forbidden-artifact audit |
 | `tests/` | Python unit and integration tests |
